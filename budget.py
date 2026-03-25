@@ -52,11 +52,23 @@ MOIS_FR = [
 @st.cache_resource
 def get_gsheets_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    # Lecture de la clé secrète configurée dans Streamlit
-    creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client
+    try:
+        # Lecture de la clé secrète configurée dans Streamlit
+        raw_creds = st.secrets["GCP_CREDENTIALS"]
+        if isinstance(raw_creds, str):
+            creds_dict = json.loads(raw_creds)
+        else:
+            creds_dict = dict(raw_creds)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        return client
+    except json.JSONDecodeError:
+        st.error("🚨 ERREUR : Le texte copié dans les 'Secrets' de Streamlit n'est pas correct.")
+        st.warning("👉 Va sur Streamlit > Settings > Secrets. Assure-toi d'avoir copié **tout** le texte du fichier `.json` entre les guillemets `\"\"\"`, y compris la première accolade `{` et la toute dernière `}`.")
+        st.stop()
+    except Exception as e:
+        st.error(f"🚨 ERREUR DE CONNEXION : {e}")
+        st.stop()
 
 def get_sheet(sheet_name):
     client = get_gsheets_client()
