@@ -1,31 +1,26 @@
 import streamlit as st
 import pandas as pd
-import os
 import calendar
 import json
 import altair as alt
 from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # Désactiver la limite de 5000 lignes pour les graphiques Altair
 alt.data_transformers.disable_max_rows()
 
 # ==========================================
-# 1. GESTION DES DONNÉES (Fichiers CSV et TXT)
+# 1. GESTION DES DONNÉES (GOOGLE SHEETS)
 # ==========================================
-CSV_FILE = "historique_budget.csv"
-CATEGORIES_FILE = "categories.txt"
-CHARGES_FILE = "mes_charges_fixes.csv"
-EPARGNES_FILE = "epargnes_fixes.csv"
-PARAMETRES_FILE = "parametres.json"
 
-# Les catégories par défaut lors du premier lancement
+# Catégories et valeurs par défaut
 CATEGORIES_DEFAUT = [
     "Essence", "Courses", "Jeux", "Resto", "Amazon", "Bricolage", 
     "Livre", "Médicale", "Cash", "Électricité", "Cadeaux", "fdj / paris", 
     "Perisco", "Couteaux", "Film", "Divers", "Tristan", "Epargnes"
 ]
 
-# Les charges fixes issues de ta copie d'écran
 CHARGES_DEFAUT = [
     {"nom": "Assurances (maison/ voitures/ accident de la vie)", "montant": 133.35},
     {"nom": "Sfr (box / tel val)", "montant": 41.98},
@@ -43,128 +38,174 @@ CHARGES_DEFAUT = [
     {"nom": "Impôts", "montant": 125.00}
 ]
 
-# Les épargnes fixes par défaut
 EPARGNES_DEFAUT = [
     {"nom": "Livret A", "montant": 100.00},
     {"nom": "Assurance Vie", "montant": 50.00}
 ]
 
-# Liste des mois en français
 MOIS_FR = [
     "Janvier", "Février", "Mars", "Avril", "Mai", "Juin", 
     "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"
 ]
 
+# --- CONNEXION À GOOGLE SHEETS ---
+@st.cache_resource
+def get_gsheets_client():
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    # Lecture de la clé secrète configurée dans Streamlit
+    creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    return client
+
+def get_sheet(sheet_name):
+    client = get_gsheets_client()
+    return client.open("Budget_Data").worksheet(sheet_name)
+
+# --- FONCTIONS DE LECTURE ET ECRITURE GLOBALES ---
+def get_dataframe(sheet_name, expected_columns):
+    try:
+        sheet = get_sheet(sheet_name)
+        records = sheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=expected_columns)
+        df = pd.DataFrame(records)
+        return df
+    except Exception as e:
+        return pd.DataFrame(columns=expected_columns)
+
+def save_dataframe(sheet_name, df):
+    sheet = get_sheet(sheet_name)
+    sheet.clear()
+    data = [df.columns.values.tolist()] + df.values.tolist()
+    try:
+        sheet.update("A1", data)
+    except Exception:
+        sheet.update(data)
+
+# --- GESTION DES PARAMETRES (JSON DANS UNE CELLULE) ---
+def charger_parametres():
+    try:
+        sheet = get_sheet("parametres")
+        val = sheet.acell('A1').value
+        if val:
+            return json.loads(val)
+    except Exception:
+        pass
+    return {}
+
+def sauvegarder_parametres(params):
+    sheet = get_sheet("parametres")
+    data = [[json.dumps(params, indent=4)]]
+    try:
+        sheet.update('A1', data)
+    except Exception:
+        sheet.update(data)
+
 def charger_categories():
-    if not os.path.exists(CATEGORIES_FILE):
-        with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
-            for c in CATEGORIES_DEFAUT:
-                f.write(c + "\n")
-    with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+    params = charger_parametres()
+    return params.get("categories_liste", CATEGORIES_DEFAUT)
 
 def ajouter_categorie(nouvelle_cat):
-    cats = charger_categories()
+    params = charger_parametres()
+    cats = params.get("categories_liste", CATEGORIES_DEFAUT)
     if nouvelle_cat not in cats:
-        with open(CATEGORIES_FILE, "a", encoding="utf-8") as f:
-            f.write(nouvelle_cat + "\n")
+        cats.append(nouvelle_cat)
+        params["categories_liste"] = cats
+        sauvegarder_parametres(params)
 
+# --- INITIALISATION DE LA BASE ---
 def init_db():
-    charger_categories()
-    if not os.path.exists(CSV_FILE):
-        df = pd.DataFrame(columns=["id", "date_transaction", "mois", "semaine", "categorie", "montant", "description"])
-        df.to_csv(CSV_FILE, index=False)
-    else:
-        df = pd.read_csv(CSV_FILE)
-        if "mois" not in df.columns:
-            df.insert(2, "mois", "Mars 2024") 
-            df.to_csv(CSV_FILE, index=False)
-            
-    if not os.path.exists(CHARGES_FILE):
-        df_charges = pd.DataFrame(CHARGES_DEFAUT)
-        df_charges.to_csv(CHARGES_FILE, index=False)
+    # S'assurer que les en-têtes existent dans chaque onglet
+    try:
+        t_sheet = get_sheet("transactions")
+        if not t_sheet.row_values(1):
+            t_sheet.append_row(["id", "date_transaction", "mois", "semaine", "categorie", "montant", "description"])
+    except: pass
+    
+    try:
+        c_sheet = get_sheet("charges")
+        if not c_sheet.row_values(1):
+            c_sheet.append_row(["nom", "montant"])
+            for c in CHARGES_DEFAUT: c_sheet.append_row([c["nom"], c["montant"]])
+    except: pass
+    
+    try:
+        e_sheet = get_sheet("epargnes")
+        if not e_sheet.row_values(1):
+            e_sheet.append_row(["nom", "montant"])
+            for e in EPARGNES_DEFAUT: e_sheet.append_row([e["nom"], e["montant"]])
+    except: pass
 
-    if not os.path.exists(EPARGNES_FILE):
-        df_epargnes = pd.DataFrame(EPARGNES_DEFAUT)
-        df_epargnes.to_csv(EPARGNES_FILE, index=False)
-
-# --- FONCTIONS LECTURE ROBUSTE ---
-def _lire_csv_securise(chemin_fichier):
-    if not os.path.exists(chemin_fichier):
-        return pd.DataFrame()
-    df = pd.read_csv(chemin_fichier)
+# --- TRANSACTIONS ---
+def get_all_transactions():
+    df = get_dataframe("transactions", ["id", "date_transaction", "mois", "semaine", "categorie", "montant", "description"])
     if not df.empty and "montant" in df.columns:
-        if df['montant'].dtype == object:
-            df['montant'] = df['montant'].astype(str).str.replace(',', '.')
+        df['montant'] = df['montant'].astype(str).str.replace(',', '.')
         df['montant'] = pd.to_numeric(df['montant'], errors='coerce').fillna(0.0)
     return df
 
-def get_all_transactions(): return _lire_csv_securise(CSV_FILE)
-def get_all_charges(): return _lire_csv_securise(CHARGES_FILE)
-def get_all_epargnes(): return _lire_csv_securise(EPARGNES_FILE)
-
 def add_transaction(mois, semaine, categorie, montant, description):
     df = get_all_transactions()
-    new_id = 1 if df.empty else df["id"].max() + 1
+    new_id = int(df["id"].max() + 1) if not df.empty else 1
     date_jour = datetime.now().strftime("%d/%m/%Y %H:%M")
-    nouvelle_ligne = pd.DataFrame([{"id": new_id, "date_transaction": date_jour, "mois": mois, "semaine": semaine, "categorie": categorie, "montant": float(montant), "description": description}])
-    df = pd.concat([df, nouvelle_ligne], ignore_index=True)
-    df.to_csv(CSV_FILE, index=False)
+    sheet = get_sheet("transactions")
+    sheet.append_row([new_id, date_jour, mois, semaine, categorie, float(montant), description])
 
 def delete_transaction(transaction_id):
     df = get_all_transactions()
     df = df[df["id"] != transaction_id]
-    df.to_csv(CSV_FILE, index=False)
+    save_dataframe("transactions", df)
+
+# --- CHARGES FIXES ---
+def get_all_charges():
+    df = get_dataframe("charges", ["nom", "montant"])
+    if not df.empty and "montant" in df.columns:
+        df['montant'] = pd.to_numeric(df['montant'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+    return df
 
 def add_charge(nom, montant):
-    df = get_all_charges()
-    nouvelle_ligne = pd.DataFrame([{"nom": nom, "montant": float(montant)}])
-    df = pd.concat([df, nouvelle_ligne], ignore_index=True)
-    df.to_csv(CHARGES_FILE, index=False)
+    sheet = get_sheet("charges")
+    if not sheet.row_values(1): sheet.append_row(["nom", "montant"])
+    sheet.append_row([nom, float(montant)])
 
 def update_charge(old_nom, new_nom, new_montant):
     df = get_all_charges()
     if old_nom in df['nom'].values:
-        idx = df[df['nom'] == old_nom].index
+        idx = df[df['nom'] == old_nom].index[0]
         df.loc[idx, 'nom'] = new_nom
         df.loc[idx, 'montant'] = float(new_montant)
-        df.to_csv(CHARGES_FILE, index=False)
+        save_dataframe("charges", df)
 
 def delete_charge(nom):
     df = get_all_charges()
     df = df[df["nom"] != nom]
-    df.to_csv(CHARGES_FILE, index=False)
+    save_dataframe("charges", df)
+
+# --- EPARGNES FIXES ---
+def get_all_epargnes():
+    df = get_dataframe("epargnes", ["nom", "montant"])
+    if not df.empty and "montant" in df.columns:
+        df['montant'] = pd.to_numeric(df['montant'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+    return df
 
 def add_epargne(nom, montant):
-    df = get_all_epargnes()
-    nouvelle_ligne = pd.DataFrame([{"nom": nom, "montant": float(montant)}])
-    df = pd.concat([df, nouvelle_ligne], ignore_index=True)
-    df.to_csv(EPARGNES_FILE, index=False)
+    sheet = get_sheet("epargnes")
+    if not sheet.row_values(1): sheet.append_row(["nom", "montant"])
+    sheet.append_row([nom, float(montant)])
 
 def update_epargne(old_nom, new_nom, new_montant):
     df = get_all_epargnes()
     if old_nom in df['nom'].values:
-        idx = df[df['nom'] == old_nom].index
+        idx = df[df['nom'] == old_nom].index[0]
         df.loc[idx, 'nom'] = new_nom
         df.loc[idx, 'montant'] = float(new_montant)
-        df.to_csv(EPARGNES_FILE, index=False)
+        save_dataframe("epargnes", df)
 
 def delete_epargne(nom):
     df = get_all_epargnes()
     df = df[df["nom"] != nom]
-    df.to_csv(EPARGNES_FILE, index=False)
-
-def charger_parametres():
-    if not os.path.exists(PARAMETRES_FILE):
-        return {}
-    with open(PARAMETRES_FILE, "r", encoding="utf-8") as f:
-        try: return json.load(f)
-        except: return {}
-
-def sauvegarder_parametres(params):
-    with open(PARAMETRES_FILE, "w", encoding="utf-8") as f:
-        json.dump(params, f, indent=4)
-
+    save_dataframe("epargnes", df)
 
 # ==========================================
 # 2. INTERFACE & MOTEUR DE CALCUL
@@ -194,7 +235,9 @@ params_mois = params_globaux.get(mois_choisi, {})
 
 if "revenus" not in params_mois and params_globaux:
     dernier_mois = list(params_globaux.keys())[-1]
-    revenus_defaut = params_globaux[dernier_mois].get("revenus", 2434.0)
+    if dernier_mois != "categories_liste":
+        revenus_defaut = params_globaux[dernier_mois].get("revenus", 2434.0)
+    else: revenus_defaut = 2434.0
 else:
     revenus_defaut = params_mois.get("revenus", 2434.0)
 
@@ -421,7 +464,7 @@ with st.expander("📈 Voir mes Statistiques et Analyses (Inclus Projections Ép
             text_evo = base_evo.mark_text(align='center', baseline='bottom', dy=-10, fontSize=13, fontWeight='bold', color='gray').encode(text='label')
             st.altair_chart((area_evo + line_evo + points_evo + text_evo).properties(height=350).configure_view(strokeWidth=0), use_container_width=True)
 
-        # --- TAB 4 : EPARGNES ET PROJECTIONS (NOUVEAU) ---
+        # --- TAB 4 : EPARGNES ET PROJECTIONS ---
         with tab_epargne:
             st.markdown("<h5 style='text-align: center;'>La Magie des Intérêts Composés 🪄</h5>", unsafe_allow_html=True)
             st.write(f"Ce mois-ci, tu as réussi à mettre de côté **{total_epargne_global:.2f} €** ({total_epargnes_fixes:.2f} € en fixe et {total_epargne_ponctuelle:.2f} € via tes restes de semaines).")
@@ -462,7 +505,7 @@ with st.expander("📈 Voir mes Statistiques et Analyses (Inclus Projections Ép
             ).properties(height=350).configure_view(strokeWidth=0)
             st.altair_chart(chart_proj, use_container_width=True)
 
-        # --- TAB 5 : SANTE FINANCIERE (NOUVEAU) ---
+        # --- TAB 5 : SANTE FINANCIERE ---
         with tab_sante:
             st.markdown("<h5 style='text-align: center;'>Analyse de ta Règle 50 / 30 / 20 ⚖️</h5>", unsafe_allow_html=True)
             st.write("Les experts financiers recommandent de diviser son budget ainsi : 50% pour les Besoins (Charges), 30% pour les Envies (Variables), et 20% pour l'Épargne. Voici où tu te situes ce mois-ci :")
