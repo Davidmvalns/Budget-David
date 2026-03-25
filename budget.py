@@ -56,6 +56,8 @@ def get_gsheets_client():
         # Lecture de la clé secrète configurée dans Streamlit
         raw_creds = st.secrets["GCP_CREDENTIALS"]
         if isinstance(raw_creds, str):
+            # Nettoyage magique des espaces invisibles qui font planter le copier-coller
+            raw_creds = raw_creds.replace('\xa0', ' ').strip()
             creds_dict = json.loads(raw_creds)
         else:
             creds_dict = dict(raw_creds)
