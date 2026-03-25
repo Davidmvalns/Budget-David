@@ -1,0 +1,19 @@
+Ignorer les bases de données personnelles (Sécurité)
+
+historique_budget.csv
+mes_charges_fixes.csv
+epargnes_fixes.csv
+categories.txt
+parametres.json
+*.csv
+*.json
+
+Ignorer les fichiers systèmes Python
+
+pycache/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.env
