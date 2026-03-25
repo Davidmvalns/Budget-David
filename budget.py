@@ -58,7 +58,8 @@ def get_gsheets_client():
         if isinstance(raw_creds, str):
             # Nettoyage magique des espaces invisibles qui font planter le copier-coller
             raw_creds = raw_creds.replace('\xa0', ' ').strip()
-            creds_dict = json.loads(raw_creds)
+            # strict=False permet d'accepter les sauts de lignes générés par TOML dans la clé privée
+            creds_dict = json.loads(raw_creds, strict=False)
         else:
             creds_dict = dict(raw_creds)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
