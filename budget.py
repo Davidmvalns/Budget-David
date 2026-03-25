@@ -75,7 +75,24 @@ def get_gsheets_client():
 
 def get_sheet(sheet_name):
     client = get_gsheets_client()
-    return client.open("Budget_Data").worksheet(sheet_name)
+    try:
+        spreadsheet = client.open("Budget_Data")
+        return spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("🚨 ERREUR : Le fichier Google Sheets 'Budget_Data' est introuvable.")
+        st.info("👉 Vérifie que tu as bien nommé ton fichier EXACTEMENT `Budget_Data` sur ton Google Drive.")
+        st.stop()
+    except gspread.exceptions.APIError:
+        st.error("🚨 ERREUR D'ACCÈS : Le robot n'a pas le droit d'ouvrir le fichier 'Budget_Data'.")
+        st.info("👉 **Tu as oublié de partager le fichier !** Va sur ton fichier Google Sheets 'Budget_Data', clique sur le gros bouton bleu **Partager** en haut à droite, et ajoute l'adresse e-mail de ton robot (celle qui finit par @...iam.gserviceaccount.com) en tant qu'Éditeur.")
+        st.stop()
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"🚨 ERREUR : L'onglet '{sheet_name}' n'existe pas dans le fichier 'Budget_Data'.")
+        st.info(f"👉 Crée cet onglet et nomme-le exactement `{sheet_name}` (tout en minuscules) en bas de ton fichier Excel Google.")
+        st.stop()
+    except Exception as e:
+        st.error(f"🚨 Erreur inattendue : {e}")
+        st.stop()
 
 # --- FONCTIONS DE LECTURE ET ECRITURE GLOBALES ---
 def get_dataframe(sheet_name, expected_columns):
